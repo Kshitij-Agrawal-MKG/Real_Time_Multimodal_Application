@@ -238,3 +238,10 @@ Windows Firewall may block port 8765 — allow Python through firewall.
 **Polly not playing audio**
 Check AWS credentials. Verify `AmazonPollyReadOnlyAccess` IAM policy is attached.
 Run `python generate_canned.py` to pre-generate fallback clips.
+
+---
+
+### Demo Video
+Watch how the project works in this demo:
+
+[![Watch the Demo](https://img.youtube.com/vi/f5hbyDvIyqo/0.jpg)](https://www.youtube.com/watch?v=f5hbyDvIyqo)

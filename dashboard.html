@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voice Pipeline — Live Monitor</title>
+<!-- fonts loaded from system -->
+<style>
+  :root {
+    --bg:        #0a0b0e;
+    --surface:   #111318;
+    --surface2:  #181c24;
+    --border:    #1e2530;
+    --text:      #e2e8f0;
+    --muted:     #4a5568;
+    --asr:       #00d4aa;
+    --llm:       #7c6af7;
+    --tts:       #f97316;
+    --overhead:  #64748b;
+    --total:     #f1f5f9;
+    --good:      #22c55e;
+    --warn:      #eab308;
+    --bad:       #ef4444;
+    --mono:      Consolas, 'Courier New', monospace;
+    --display:   'Segoe UI', Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Scanline overlay ───────────────────────────────────── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.03) 2px,
+      rgba(0,0,0,0.03) 4px
+    );
+    pointer-events: none;
+    z-index: 999;
+  }
+
+  /* ── Header ─────────────────────────────────────────────── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 28px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .logo {
+    font-family: var(--display);
+    font-size: 18px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .logo-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--asr);
+    box-shadow: 0 0 10px var(--asr);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%,100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.6; transform: scale(0.85); }
+  }
+
+  .status-pill {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 12px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    transition: all 0.3s;
+  }
+
+  .status-pill.connected {
+    border-color: var(--good);
+    color: var(--good);
+  }
+
+  .status-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  .status-pill.connected .status-dot {
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+
+  /* ── Main grid ──────────────────────────────────────────── */
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: auto auto 1fr;
+    gap: 1px;
+    background: var(--border);
+    min-height: calc(100vh - 57px);
+  }
+
+  .panel {
+    background: var(--bg);
+    padding: 20px 24px;
+  }
+
+  .panel-label {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .panel-label::before {
+    content: '';
+    display: block;
+    width: 3px; height: 3px;
+    border-radius: 50%;
+    background: var(--muted);
+  }
+
+  /* ── Stat cards (top row) ───────────────────────────────── */
+  .stat-card {
+    background: var(--bg);
+    padding: 20px 24px;
+  }
+
+  .stat-value {
+    font-family: var(--display);
+    font-size: 42px;
+    font-weight: 800;
+    letter-spacing: -2px;
+    line-height: 1;
+    margin-bottom: 6px;
+    transition: color 0.4s;
+  }
+
+  .stat-unit {
+    font-size: 18px;
+    font-weight: 400;
+    opacity: 0.5;
+  }
+
+  .stat-label {
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .stat-bar {
+    height: 2px;
+    margin-top: 14px;
+    border-radius: 1px;
+    background: var(--border);
+    overflow: hidden;
+  }
+
+  .stat-bar-fill {
+    height: 100%;
+    border-radius: 1px;
+    transition: width 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  /* ── Latency timeline (full width) ─────────────────────── */
+  .timeline-panel {
+    grid-column: 1 / -1;
+  }
+
+  .timeline-track {
+    position: relative;
+    height: 44px;
+    background: var(--surface);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 8px;
+  }
+
+  .tl-segment {
+    position: absolute;
+    top: 0; height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    overflow: hidden;
+    transition: width 0.8s cubic-bezier(0.25, 1, 0.5, 1),
+                left 0.8s cubic-bezier(0.25, 1, 0.5, 1);
+  }
+
+  .tl-segment span {
+    white-space: nowrap;
+    padding: 0 8px;
+    opacity: 0.9;
+  }
+
+  .seg-asr      { background: rgba(0,212,170,0.18); border-right: 1px solid var(--asr);      color: var(--asr); }
+  .seg-llm      { background: rgba(124,106,247,0.18); border-right: 1px solid var(--llm);    color: var(--llm); }
+  .seg-tts      { background: rgba(249,115,22,0.18); border-right: 1px solid var(--tts);     color: var(--tts); }
+  .seg-overhead { background: rgba(100,116,139,0.12); border-right: 1px solid var(--overhead); color: var(--overhead); }
+
+  .tl-labels {
+    display: flex;
+    gap: 16px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  .tl-legend-item {
+    display: flex; align-items: center; gap: 5px;
+  }
+
+  .tl-legend-dot {
+    width: 8px; height: 8px; border-radius: 2px;
+  }
+
+  /* ── History chart ──────────────────────────────────────── */
+  .chart-panel {
+    grid-column: 1 / 3;
+  }
+
+  .bars-container {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 160px;
+    position: relative;
+  }
+
+  .bar-group {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    height: 100%;
+    justify-content: flex-end;
+  }
+
+  .bar-segment {
+    width: 100%;
+    min-height: 2px;
+    border-radius: 2px 2px 0 0;
+    transition: height 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+    cursor: pointer;
+    position: relative;
+  }
+
+  .bar-segment:first-child { border-radius: 2px 2px 0 0; }
+  .bar-segment:not(:first-child) { border-radius: 0; }
+
+  .bar-asr      { background: var(--asr);      opacity: 0.8; }
+  .bar-llm      { background: var(--llm);      opacity: 0.8; }
+  .bar-tts      { background: var(--tts);      opacity: 0.8; }
+  .bar-overhead { background: var(--overhead); opacity: 0.6; }
+
+  .bar-group:hover .bar-segment { opacity: 1; }
+
+  .chart-x-labels {
+    display: flex;
+    gap: 3px;
+    margin-top: 6px;
+  }
+
+  .chart-x-label {
+    flex: 1;
+    text-align: center;
+    font-size: 10px;
+    color: var(--muted);
+    overflow: hidden;
+  }
+
+  .chart-y-lines {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  .chart-y-line {
+    position: absolute;
+    left: 0; right: 0;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .chart-y-label {
+    position: absolute;
+    left: 0;
+    font-size: 10px;
+    color: var(--muted);
+    transform: translateY(-50%);
+    white-space: nowrap;
+  }
+
+  /* ── Event log ──────────────────────────────────────────── */
+  .log-panel {
+    grid-column: 3 / 4;
+    grid-row: 3;
+  }
+
+  .log-entries {
+    height: 200px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .log-entries::-webkit-scrollbar { width: 4px; }
+  .log-entries::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .log-entry {
+    display: flex;
+    gap: 10px;
+    font-size: 11px;
+    line-height: 1.6;
+    padding: 4px 0;
+    border-bottom: 1px solid rgba(30,37,48,0.5);
+    animation: fadeIn 0.3s ease;
+  }
+
+  @keyframes fadeIn { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; } }
+
+  .log-ts   { color: var(--muted); flex-shrink: 0; }
+  .log-stage {
+    flex-shrink: 0;
+    font-weight: 500;
+    width: 24px;
+    text-align: right;
+  }
+  .log-msg  { color: var(--text); }
+
+  .log-asr      { color: var(--asr); }
+  .log-llm      { color: var(--llm); }
+  .log-tts      { color: var(--tts); }
+  .log-overhead { color: var(--overhead); }
+  .log-ok       { color: var(--good); }
+  .log-warn     { color: var(--warn); }
+  .log-err      { color: var(--bad); }
+
+  /* ── Connection overlay ─────────────────────────────────── */
+  #overlay {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    z-index: 100;
+    transition: opacity 0.5s;
+  }
+
+  #overlay.hidden { opacity: 0; pointer-events: none; }
+
+  .overlay-title {
+    font-family: var(--display);
+    font-size: 22px;
+    font-weight: 800;
+  }
+
+  .overlay-sub {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .spinner {
+    width: 32px; height: 32px;
+    border: 2px solid var(--border);
+    border-top-color: var(--asr);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Tooltips ───────────────────────────────────────────── */
+  .tooltip {
+    position: fixed;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 11px;
+    pointer-events: none;
+    z-index: 200;
+    opacity: 0;
+    transition: opacity 0.15s;
+    line-height: 1.8;
+  }
+
+  .tooltip.visible { opacity: 1; }
+  .tooltip-row { display: flex; justify-content: space-between; gap: 20px; }
+  .tooltip-val { font-weight: 500; }
+
+  /* ── Demo mode banner ───────────────────────────────────── */
+  .demo-banner {
+    background: rgba(124,106,247,0.1);
+    border-bottom: 1px solid rgba(124,106,247,0.3);
+    padding: 6px 28px;
+    font-size: 11px;
+    color: var(--llm);
+    letter-spacing: 0.04em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .demo-banner.hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div id="overlay">
+  <div class="spinner"></div>
+  <div class="overlay-title">Voice Pipeline Monitor</div>
+  <div class="overlay-sub" id="overlay-msg">Connecting to ws://localhost:8765…</div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<header>
+  <div class="logo">
+    <div class="logo-dot"></div>
+    Voice Pipeline Monitor
+  </div>
+  <div class="status-pill" id="status-pill">
+    <div class="status-dot"></div>
+    <span id="status-text">Disconnected</span>
+  </div>
+</header>
+
+<div class="demo-banner" id="demo-banner">
+  ◈ Demo mode — simulated data. Connect ws://localhost:8765 to see live pipeline metrics.
+</div>
+
+<!-- Top stats row -->
+<main>
+  <div class="stat-card" id="card-asr">
+    <div class="panel-label">ASR latency</div>
+    <div class="stat-value" id="val-asr">—<span class="stat-unit">ms</span></div>
+    <div class="stat-label">Deepgram → first transcript</div>
+    <div class="stat-bar"><div class="stat-bar-fill" id="bar-asr" style="background:var(--asr);width:0%"></div></div>
+  </div>
+
+  <div class="stat-card" id="card-llm">
+    <div class="panel-label">LLM TTFT</div>
+    <div class="stat-value" id="val-llm">—<span class="stat-unit">ms</span></div>
+    <div class="stat-label">Transcript → first token</div>
+    <div class="stat-bar"><div class="stat-bar-fill" id="bar-llm" style="background:var(--llm);width:0%"></div></div>
+  </div>
+
+  <div class="stat-card" id="card-tts">
+    <div class="panel-label">TTS TTFB</div>
+    <div class="stat-value" id="val-tts">—<span class="stat-unit">ms</span></div>
+    <div class="stat-label">Token → first audio byte</div>
+    <div class="stat-bar"><div class="stat-bar-fill" id="bar-tts" style="background:var(--tts);width:0%"></div></div>
+  </div>
+
+  <!-- Timeline panel -->
+  <div class="panel timeline-panel">
+    <div class="panel-label">Latency breakdown — utterance #<span id="utt-id">—</span></div>
+    <div class="timeline-track" id="timeline">
+      <div class="tl-segment seg-asr"      id="tl-asr"      style="left:0%;width:25%">     <span>ASR</span></div>
+      <div class="tl-segment seg-llm"      id="tl-llm"      style="left:25%;width:30%">    <span>LLM</span></div>
+      <div class="tl-segment seg-tts"      id="tl-tts"      style="left:55%;width:30%">    <span>TTS</span></div>
+      <div class="tl-segment seg-overhead" id="tl-overhead" style="left:85%;width:15%">    <span>overhead</span></div>
+    </div>
+    <div class="tl-labels">
+      <div class="tl-legend-item"><div class="tl-legend-dot" style="background:var(--asr)"></div><span id="tl-label-asr">ASR —ms</span></div>
+      <div class="tl-legend-item"><div class="tl-legend-dot" style="background:var(--llm)"></div><span id="tl-label-llm">LLM —ms</span></div>
+      <div class="tl-legend-item"><div class="tl-legend-dot" style="background:var(--tts)"></div><span id="tl-label-tts">TTS —ms</span></div>
+      <div class="tl-legend-item"><div class="tl-legend-dot" style="background:var(--overhead)"></div><span id="tl-label-oh">overhead —ms</span></div>
+      <div class="tl-legend-item" style="margin-left:auto"><span style="color:var(--text)">Total: <strong id="tl-total">—ms</strong></span></div>
+    </div>
+  </div>
+
+  <!-- Bar chart -->
+  <div class="panel chart-panel">
+    <div class="panel-label">History — last <span id="hist-count">0</span> utterances</div>
+    <div style="position:relative">
+      <div class="bars-container" id="bars-container">
+        <div class="chart-y-lines" id="y-lines"></div>
+        <div style="color:var(--muted);font-size:12px;margin:auto">No data yet</div>
+      </div>
+      <div class="chart-x-labels" id="x-labels"></div>
+    </div>
+  </div>
+
+  <!-- Event log -->
+  <div class="panel log-panel">
+    <div class="panel-label">Event log</div>
+    <div class="log-entries" id="log-entries"></div>
+  </div>
+</main>
+
+<script>
+const MAX_BARS = 20;
+const MAX_MS   = 2000;  // y-axis ceiling
+
+let history = [];
+let demoMode = false;
+let wsConnected = false;
+
+// ── Helpers ────────────────────────────────────────────────
+function colorForMs(ms, thresholds=[400, 900]) {
+  if (!ms) return 'var(--muted)';
+  if (ms < thresholds[0]) return 'var(--good)';
+  if (ms < thresholds[1]) return 'var(--warn)';
+  return 'var(--bad)';
+}
+
+function fmt(v) { return v != null ? Math.round(v) : '—'; }
+
+function ts() {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
+}
+
+// ── Log panel ──────────────────────────────────────────────
+function addLog(stage, msg, cls='') {
+  const el = document.getElementById('log-entries');
+  const row = document.createElement('div');
+  row.className = 'log-entry';
+  row.innerHTML = `
+    <span class="log-ts">${ts()}</span>
+    <span class="log-stage log-${stage.toLowerCase()}">${stage}</span>
+    <span class="log-msg ${cls}">${msg}</span>`;
+  el.prepend(row);
+  // Keep at most 80 entries
+  while (el.children.length > 80) el.removeChild(el.lastChild);
+}
+
+// ── Update stat cards ──────────────────────────────────────
+function updateCards(r) {
+  const fields = [
+    ['asr', r.asr_latency_ms, 800],
+    ['llm', r.llm_ttft_ms,    800],
+    ['tts', r.tts_ttfb_ms,    600],
+  ];
+  for (const [key, val, max] of fields) {
+    document.getElementById(`val-${key}`).innerHTML =
+      `${fmt(val)}<span class="stat-unit">ms</span>`;
+    document.getElementById(`val-${key}`).style.color = colorForMs(val);
+    const pct = val ? Math.min(100, val / max * 100) : 0;
+    document.getElementById(`bar-${key}`).style.width = pct + '%';
+  }
+}
+
+// ── Update timeline bar ────────────────────────────────────
+function updateTimeline(r) {
+  const total = r.total_ms || 1;
+  const asr  = r.asr_latency_ms || 0;
+  const llm  = r.llm_ttft_ms    || 0;
+  const tts  = r.tts_ttfb_ms    || 0;
+  const oh   = r.overhead_ms    || 0;
+
+  document.getElementById('utt-id').textContent = r.utterance_id || '—';
+
+  // Widths as % of total
+  const sum = asr + llm + tts + oh || 1;
+  const wp = v => Math.max(1, (v / sum * 100)).toFixed(1);
+
+  let left = 0;
+  const segs = [
+    ['asr',      asr,  asr],
+    ['llm',      llm,  llm],
+    ['tts',      tts,  tts],
+    ['overhead', oh,   oh],
+  ];
+  for (const [key, val, ms] of segs) {
+    const w = +wp(val);
+    document.getElementById(`tl-${key}`).style.left  = left.toFixed(1) + '%';
+    document.getElementById(`tl-${key}`).style.width = w + '%';
+    left += w;
+  }
+
+  document.getElementById('tl-label-asr').textContent = `ASR ${fmt(asr)}ms`;
+  document.getElementById('tl-label-llm').textContent = `LLM ${fmt(llm)}ms`;
+  document.getElementById('tl-label-tts').textContent = `TTS ${fmt(tts)}ms`;
+  document.getElementById('tl-label-oh').textContent  = `overhead ${fmt(oh)}ms`;
+  document.getElementById('tl-total').textContent     = `${fmt(r.total_ms)}ms`;
+  document.getElementById('tl-total').style.color = colorForMs(r.total_ms, [1000, 1800]);
+}
+
+// ── Render bar chart ───────────────────────────────────────
+const tooltip = document.getElementById('tooltip');
+
+function renderBars() {
+  const container = document.getElementById('bars-container');
+  const xLabels   = document.getElementById('x-labels');
+
+  // Y axis reference lines
+  const yLines = document.getElementById('y-lines');
+  yLines.innerHTML = '';
+  [500, 1000, 1500].forEach(val => {
+    const pct = (1 - val / MAX_MS) * 100;
+    yLines.innerHTML += `
+      <div class="chart-y-line" style="bottom:${pct}%"></div>
+      <div class="chart-y-label" style="bottom:${pct}%">${val}ms</div>`;
+  });
+
+  // Clear old bar groups (keep y-lines div)
+  const oldGroups = container.querySelectorAll('.bar-group');
+  oldGroups.forEach(g => g.remove());
+  xLabels.innerHTML = '';
+
+  if (!history.length) {
+    container.insertAdjacentHTML('beforeend', '<div style="color:var(--muted);font-size:12px;margin:auto">No data yet</div>');
+    return;
+  }
+
+  const visible = history.slice(-MAX_BARS);
+  document.getElementById('hist-count').textContent = visible.length;
+
+  visible.forEach((r, i) => {
+    const total = r.total_ms || 0;
+    const segs = [
+      { key: 'tts',      val: r.tts_ttfb_ms    || 0, cls: 'bar-tts'      },
+      { key: 'llm',      val: r.llm_ttft_ms    || 0, cls: 'bar-llm'      },
+      { key: 'asr',      val: r.asr_latency_ms || 0, cls: 'bar-asr'      },
+      { key: 'overhead', val: r.overhead_ms    || 0, cls: 'bar-overhead'  },
+    ];
+    const maxH = 160;
+
+    const group = document.createElement('div');
+    group.className = 'bar-group';
+
+    // Render bottom-up (overhead at top visually)
+    const orderedSegs = [
+      { key: 'overhead', val: r.overhead_ms    || 0, cls: 'bar-overhead' },
+      { key: 'tts',      val: r.tts_ttfb_ms    || 0, cls: 'bar-tts'     },
+      { key: 'llm',      val: r.llm_ttft_ms    || 0, cls: 'bar-llm'     },
+      { key: 'asr',      val: r.asr_latency_ms || 0, cls: 'bar-asr'     },
+    ];
+
+    for (const seg of orderedSegs) {
+      const h = Math.max(2, (seg.val / MAX_MS) * maxH);
+      const div = document.createElement('div');
+      div.className = `bar-segment ${seg.cls}`;
+      div.style.height = h + 'px';
+      group.appendChild(div);
+    }
+
+    // Tooltip
+    group.addEventListener('mousemove', e => {
+      tooltip.innerHTML = `
+        <div class="tooltip-row"><span>#${r.utterance_id}</span></div>
+        <div class="tooltip-row"><span class="log-asr">ASR</span><span class="tooltip-val">${fmt(r.asr_latency_ms)}ms</span></div>
+        <div class="tooltip-row"><span class="log-llm">LLM</span><span class="tooltip-val">${fmt(r.llm_ttft_ms)}ms</span></div>
+        <div class="tooltip-row"><span class="log-tts">TTS</span><span class="tooltip-val">${fmt(r.tts_ttfb_ms)}ms</span></div>
+        <div class="tooltip-row"><span style="color:var(--overhead)">OH</span><span class="tooltip-val">${fmt(r.overhead_ms)}ms</span></div>
+        <div class="tooltip-row" style="border-top:1px solid var(--border);padding-top:4px;margin-top:4px">
+          <span>Total</span><span class="tooltip-val" style="color:${colorForMs(r.total_ms,[1000,1800])}">${fmt(r.total_ms)}ms</span>
+        </div>`;
+      tooltip.style.left = (e.clientX + 12) + 'px';
+      tooltip.style.top  = (e.clientY - 10) + 'px';
+      tooltip.classList.add('visible');
+    });
+    group.addEventListener('mouseleave', () => tooltip.classList.remove('visible'));
+
+    container.appendChild(group);
+    xLabels.insertAdjacentHTML('beforeend',
+      `<div class="chart-x-label">${r.utterance_id}</div>`);
+  });
+}
+
+// ── Process incoming record ────────────────────────────────
+function processRecord(r) {
+  history.push(r);
+  updateCards(r);
+  updateTimeline(r);
+  renderBars();
+
+  const total = r.total_ms;
+  const cls = total < 1000 ? 'log-ok' : total < 1800 ? 'log-warn' : 'log-err';
+  addLog('OK', `#${r.utterance_id} — total ${fmt(total)}ms  (ASR ${fmt(r.asr_latency_ms)} + LLM ${fmt(r.llm_ttft_ms)} + TTS ${fmt(r.tts_ttfb_ms)} + oh ${fmt(r.overhead_ms)})`, cls);
+}
+
+// ── WebSocket ──────────────────────────────────────────────
+function connect() {
+  const ws = new WebSocket('ws://localhost:8765');
+
+  ws.onopen = () => {
+    wsConnected = true;
+    demoMode = false;
+    document.getElementById('overlay').classList.add('hidden');
+    document.getElementById('demo-banner').classList.add('hidden');
+    const pill = document.getElementById('status-pill');
+    pill.classList.add('connected');
+    document.getElementById('status-text').textContent = 'Live';
+    addLog('WS', 'Connected to pipeline server', 'log-ok');
+  };
+
+  ws.onmessage = e => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'history') {
+      msg.history.forEach(processRecord);
+    } else if (msg.type === 'utterance') {
+      processRecord(msg.data);
+    }
+  };
+
+  ws.onerror = () => {};
+  ws.onclose = () => {
+    wsConnected = false;
+    document.getElementById('status-pill').classList.remove('connected');
+    document.getElementById('status-text').textContent = 'Disconnected';
+    addLog('WS', 'Disconnected - retrying in 3s', 'log-warn');
+    setTimeout(connect, 3000);
+  };
+}
+
+// ── Demo mode simulation ───────────────────────────────────
+let demoId = 0;
+function runDemo() {
+  demoMode = true;
+  document.getElementById('demo-banner').classList.remove('hidden');
+  document.getElementById('overlay').classList.add('hidden');
+  addLog('DEMO', 'Simulating pipeline data…', 'log-warn');
+
+  function genRecord() {
+    if (wsConnected) return;
+    demoId++;
+    const asr = 180 + Math.random() * 280;
+    const llm = 250 + Math.random() * 450 + (Math.random() < 0.1 ? 600 : 0);
+    const tts = 120 + Math.random() * 220;
+    const oh  = 20  + Math.random() * 80;
+    processRecord({
+      utterance_id:   demoId,
+      asr_latency_ms: +asr.toFixed(1),
+      llm_ttft_ms:    +llm.toFixed(1),
+      tts_ttfb_ms:    +tts.toFixed(1),
+      overhead_ms:    +oh.toFixed(1),
+      total_ms:       +(asr + llm + tts + oh).toFixed(1),
+    });
+    setTimeout(genRecord, 2000 + Math.random() * 3000);
+  }
+  setTimeout(genRecord, 800);
+}
+
+// ── Boot ───────────────────────────────────────────────────
+connect();
+// Start demo after 2s if no connection
+setTimeout(() => {
+  if (!wsConnected) runDemo();
+}, 2000);
+</script>
+</body>
+</html>

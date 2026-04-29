@@ -1,0 +1,12 @@
+# Voice Assistant -- Windows 11 dependencies
+# Install: pip install -r requirements.txt
+#
+# PyAudio (if plain pip fails):
+#   pip install pipwin && pipwin install pyaudio
+
+pyaudio>=0.2.14
+vosk>=0.3.45
+websockets>=12.0
+google-genai>=0.8.0
+boto3>=1.34.0
+python-dotenv>=1.0.0

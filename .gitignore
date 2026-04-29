@@ -1,0 +1,23 @@
+# Credentials
+.env
+
+# Runtime artefacts
+memory.json
+latency_log.json
+config_overrides.json
+sessions/
+canned/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Editors
+.vscode/
+.idea/
+.DS_Store
